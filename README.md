@@ -1,81 +1,5 @@
 # hackios-s7
-# Status, 2026-11-07: Apple's XNU kernel boots on a flat Galaxy S7 and runs the unmodified iPhone X iOS 16.7.16 userland to the home screen with GPU acceleration, Wi-Fi and sound: CoreAnimation renders on the Mali-T880 through OpenGL ES (Mesa Panfrost under HakiOS's EAGL bridge), the BCM4359 joins WPA2 networks, and the loudspeaker plays. Apps open and load, and it is usable day to day apart from the gaps below. There is no Metal.
-
-Try it: docs/herolte-howto.md. Apple's software and the Wi-Fi firmware are not in this repository: you build the iOS root from Apple's IPSW in a private repository and take the firmware from your own phone.
-
-Area	State
-Boot	Samsung S-Boot loads our loader from BOOT (shim/herolte/), which starts XNU
-CPU	All 8 cores, Mongoose at 2288 MHz (Samsung's own voltage table). UI threads move from the A53s to an idle Mongoose (0274, 0321). No thermal limit yet
-RAM	About 3 GiB: the second DRAM bank (2 GiB) plus the first bank's free pieces (0326-0329, tools/herolte-adt-ram-banks.py)
-Storage	Own Exynos UFS driver; iOS root is HFSX in USERDATA, read/write, with the system apps
-GPU	Mali-T880 MP12 at 650 MHz through EAGL → OSMesa/Panfrost → our kernel job service
-Display	iOS draws an iPhone 8 screen, 750×1334 @2x, scaled to the 1440×2560 panel by the GPU into two buffers flipped on the display's IDMA (0322: no tearing). Panel at a real 60 Hz (0296); CoreAnimation told 120 Hz and the kernel's timer coalescing off (0323)
-Wi-Fi	BCM4359 over PCIe with the phone's own firmware, WPA2 handshake in the kernel, en0 and Apple80211 for wifid: the Wi-Fi icon, internet, Safari (0308-0315)
-Sound	The loudspeaker through the I2S block and an AudioServerPlugIn (gpu/hakios-audio, heroaudio=3)
-Navigation	Physical Home button (home-button-type 1). Home gestures need type 2, which brings UIKit's red rdar:45025538 status bar at this size; not solved
-Wallpaper	iOS's own wallpapers and gallery, except the stock iOS 16 one (black)
-Touch, buttons, battery	Working
-Not working	modem, Bluetooth, camera, sensors, sleep, Face ID, Metal (the Today view and Control Center blurs are black), Siri's voices
-Thanks to Scion and danstronics/ios-s9plus-exynos (Galaxy S9/S9+): the display flip, the CoreAnimation timing, the UI-thread migration and the RAM banks follow their work.
-
-What made it usable, in the order found: factory GPU and CPU rates at factory voltages, the apps in the root image, moving BTAudioHALPlugin away (it kept asking the absent bluetoothd; idle CPU fell from over 300% to under 25% of 800%, found by syncmodz/ios-s9), and the lower resolution. Boot arguments and how to build the ADT: tools/mkadt_herolte.py --iphone8 and HEROLTE_PROGRESS.md (Spanish).
-
-How to try it: docs/herolte-howto.md (erases USERDATA; Apple's software is not in this repository). The S7 kernel patches are xnu/patches/0200 and up; the board config is MACHINE_CONFIG=HEROLTE.
-
-Next: thermal limit, audio, Wi-Fi, more optimization. Help is welcome. Please open an issue with the log from tools/herolte-log-pull.py and a photo of the screen.
-
-Credits: Mesa/Panfrost, HakiOS EAGL bridge (gpu/hakios-gl, see its NOTICE), Bergamota's EAGL shim (gpu/eagl), ios-sweet, syncmodz/ios-s9 and the LineageOS Exynos 8890 kernel for the hardware tables.
-
-Based on orhunnx/ios-a5xelte (A5 2016) and its Redmi Note 10 Pro donor, documented below.
-
-ios-a5xelte (SM-A510F experimental port)
-This fork targets the Samsung Galaxy A5 (2016), a5xelte / Exynos7580. The original ios-sweet README remains below as a donor reference. Its iOS home-screen claim, Xiaomi boot commands, 16 KiB pages, UFS root, Qualcomm drivers and userdata flashing instructions do not describe the Samsung port.
-
-A5XELTE status, 2026-10-20: A 4 KiB, A5XELTE-configured XNU 8796 kernel enters on the physical SM-A510F. The Samsung BOOT loader hands off the firmware display through Exynos7580 DECON/DSIM. The user has verified XNU-owned assembly text and dynamic C/kprintf output through VM bootstrap, CPU0 self-IPI, pthread registration, scheduled network workers and passing Skywalk self-tests. An 8 MiB HFS+ RAM disk was mounted earlier. The new Exynos7580 read-only eMMC driver identifies GPT SYSTEM p20 as /dev/emmcroot0; the phone screen confirms BSD root: emmcroot0 and hfs: mounted A5XNU on device b(1, 0). The A5XELTE unsigned-root exception passes the next check, and XNU attempts process 1. The HFS volume is empty, so /sbin/launchd is missing and iOS userland is not running.
-
-The A5XELTE path uses shim/a5xelte/, tools/mkadt_a5xelte.py, tools/a5xelte-pack-probe.py and XNU patches 0082 onward. BOOT p10 carries the test XNU; the user also explicitly authorized replacing Linux SYSTEM p20 with a dedicated HFS+ root. Recovery p11, EFS p3 and USERDATA p23 are preserved. Device and build evidence is in A5XELTE_PROGRESS.md, with technical setup in docs/a5xelte-bringup.md. docs/a5xelte-migration-map.md tracks which donor components can be reused and when SWEET-specific code can be retired.
-
-Original ios-sweet README (donor reference)
-ios-sweet
-Apple's iOS 16 running on a Redmi Note 10 Pro.
-
-This project ports Apple's open-source XNU kernel (xnu-8796, the iOS 16 generation) to the Xiaomi Redmi Note 10 Pro (sweet, Qualcomm SM7150 / Snapdragon 732G). On top of it runs the unmodified iOS 16.7.16 (20H392) userland of the iPhone X: launchd, the system daemons, backboardd, SpringBoard and the stock apps.
-
-As of 2026-10-18 the phone boots to the iOS home screen. You can unlock it, open Settings, pull down Control Center and the notification center, and use the touchscreen and the hardware buttons. Rendering runs entirely on the CPU; there is no GPU driver.
-
-Experimental bring-up, not a usable phone OS. Many things are missing or stubbed (see below), and Apple's security model is mostly switched off. It installs into the userdata partition and so erases Android's user data.
-
-What works
-Area	State
-Boot	Stock Xiaomi bootloader → fastboot boot of our shim → XNU. Nothing is flashed to the boot partitions
-CPU	6 of the 8 cores (the six Cortex-A55s) via PSCI, 16K pages, GICv3 interrupts, timers
-Memory	About 3.95 GiB of the upper DDR bank
-Storage	Own UFS host driver; the iOS root is a journaled HFS+ volume in userdata, read/write
-iOS userland	Real iPhone X 16.7.16 root filesystem and shared cache; launchd and the system daemons run
-Display	Kernel IOSurface + IOMobileFramebuffer (AppleCLCD) services; CoreAnimation renders in software; frames are copied into the bootloader's framebuffer. Presented to iOS as an iPhone X panel (1125×2436)
-GUI	backboardd, SpringBoard, lock screen, home screen, Control Center, notification center, Settings
-Touch	Goodix GT9896 over I²C (GENI), rail enabled through RPMh, delivered as HID digitizer events
-Buttons	Power, volume up/down (PMIC through SPMI) as HID consumer keys; lock/wake works
-Battery	IOPMPowerSource service (static 100 %, charging icon; real fuel-gauge readout prepared)
-Device identity	iPhone X (iPhone10,3 / D22AP): no Home button, gesture UI
-Activation	Native "Hactivation" path of mobileactivationd, chosen through device-tree security status. No Apple servers involved
-What does not work (yet)
-Navigation: you cannot leave an app (the home gesture and AssistiveTouch Home do nothing yet).
-No Wi-Fi, Bluetooth, cellular, audio, camera, sensors, GPS or SEP / Face ID. Daemons for them start and fail or keep relaunching.
-No GPU. Everything is drawn by the CPU at roughly 20–30 fps. The two Cortex-A76 cores are not used yet.
-Few apps. The image has only what is on the system volume. There is no App Store, no Apple ID, and some Settings pages are empty.
-Slow boot: about 4 minutes on the Apple logo.
-Security is off: permissive code signing (AMFI) and sandbox policies, a stub AppleKeyStore, no data protection. Do not put anything personal on it.
-How it boots
-ABL (stock Xiaomi bootloader, unlocked)
-  -> fastboot boot shim-boot.img              (temporary; nothing is flashed to boot)
-     -> shim: own MMU setup, reads the live FDT, loads the payload from the ramdisk
-        -> XNU Mach-O + generated Apple Device Tree (ADT) + boot-args
-           -> XNU -> UFS driver -> HFS+ root in the userdata partition
-              -> dyld + shared cache -> launchd -> daemons -> backboardd + SpringBoard
-There is no serial port (the debug UART is wired as SPI on this board). The kernel draws its console into the framebuffer that ABL leaves at 0x9c000000, and keeps a persistent 4 MiB log ring at the end of userdata. You read that log from OrangeFox recovery with tools/sweet-log-pull.sh, so you don't have to film the screen.
-
-How to do it yourself
+# How to do it yourself
 You need a Redmi Note 10 Pro (sweet, global or Indian variant, SM7150) with an unlocked bootloader, a Linux PC, and a GitHub account for the kernel build. This is the exact path used for the screenshots above; other variants or firmware may need changes. Everything on userdata is lost. Bootloaders, recovery, modem and persist partitions are never touched.
 
 0. Back up the phone
@@ -178,11 +102,3 @@ Kernel patches
 0066–0067	Fault-region crash info; console mute
 0068	IOSurface lookup semantics for already-mapped surfaces
 0069	Batched persistent-log flushes
-Key hardware facts
-RAM: payloads use the upper bank, 0x100000000 + 0xfcc00000 (about 3.95 GiB), above Qualcomm's protected carve-outs.
-GICv3 with security extensions: the timer goes through Group 1 IRQ (virtual timer INTID 19), not FIQ as on Apple silicon.
-PSCI through smc, 19.2 MHz timer, ARMv8.2 without pointer authentication. MPIDR uses Aff1 for the core number.
-Panel: 1080×2400 DSC video mode, continuous splash from ABL, no refresh kick needed.
-Touch: Goodix GT9896 at I²C 0x5d on QUP SE7 (0xa84000), powered by PM6150L LDO11 through RPMh.
-Buttons: power and volume down on the PM6150 PON block, volume up on PM6150L GPIO2 (SPMI SID 4).
-More in NOTES.md
